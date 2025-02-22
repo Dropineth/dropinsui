@@ -246,7 +246,7 @@ function TreeDataDisplay({ treeId }) {
 export default TreeDataDisplay;
 ```
 
-### **4.4 完整方案优点**
+#### **4.4 完整方案优点**
 
 - **链上存储**：仅存储树木的核心元数据（如树木编号、地理位置、所有者等）。
 - **链下存储**：Walrus 存储大量的树木数据（如碳汇数据、气象数据、树木生长状态等），并通过 URI 引用。
