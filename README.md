@@ -138,15 +138,121 @@ module gororo_warranty {
 - **所有权信息**：通过 NFT 或 Token 形式管理每棵树的所有权。
 - **碳汇数据**：每棵树的碳吸收量、服务记录等重要数据。
 
-#### **WALRUS存储**
-- **地形地貌、气象数据**：这些数据存储在 IDC 数据中心，计算碳汇时与链上的数据结合。
-- **物理孪生**：存储树木的生长照片、视频等多媒体文件。
-- **碳汇结算**：结合气象、地形数据，计算树木的碳汇量，并在链上更新。
+### **Walrus 存储的优势**：
+
+- **去中心化**：Walrus 采用去中心化存储，可以消除单点故障的问题，不会像传统的 IDC 存储一样依赖某一特定服务器或数据中心。
+- **高效扩展**：Walrus 提供了高度可扩展的存储解决方案，适用于大规模存储需求，如存储 2 万亿颗树的数据。
+- **链下与链上数据结合**：它能够将链下的大数据（如树木的生长状态、碳汇计算等）与区块链的去中心化属性结合起来，做到链上存储唯一标识符（如树木的 ID 和地理位置）与链下存储（如详细的生长数据和碳汇信息）的无缝连接。
+- **可靠性与分布式存储**：Walrus 使用了分布式存储和冗余技术，数据更加安全，且易于恢复。
+- **去中心化存储费用透明**：相较于传统 IDC 存储，Walrus 采用去中心化网络支付方式，通常会提供更具成本效益的存储方案，尤其对于长期存储的数据。
 
 #### **WALRUS 与 Sui 结合的示意**：
 - 当用户查询树木数据时，前端会向 Sui 区块链查询树木 ID 和基本信息。
 - 前端会获取链下的 **地形、气象、碳汇结算数据** 并呈现，提供精确的树木生长和碳汇情况。
 - **哈希值**：将气象、碳汇等数据的哈希值存储到链上，确保数据一致性和安全性。
+
+
+### **集成 Walrus 存储**
+
+把树木的生长状态、碳汇数据等存储在 Walrus 中，而 ID 和树木相关的唯一标识符（如经纬度、树木编号等）仍然存储在 Sui 区块链上。
+
+#### **4.1 数据存储设计**
+
+- **树木唯一 ID 和元数据（链上存储）**：
+    - 存储树木的 **唯一标识符（ID）**、**地理位置（经纬度）**、**当前所有者** 等链上数据。
+  
+- **详细的树木数据（链下 Walrus 存储）**：
+    - 包括 **树木生长状态**、**碳汇数据**、**气象数据**、**物理数字孪生** 等大规模数据，存储到 Walrus 分布式存储系统中。
+
+#### **4.2 Sui 合约与 Walrus 存储结合**
+
+- 在 Sui 合约中存储每棵树的 **唯一标识符**，以及相关 **NFT 资产**。
+- 使用 **链下** 存储与 **Walrus** 交互，上传树木的详细数据。通过 API 接口将数据传输到 Walrus 中，同时可以获取数据的 **URI**，这个 URI 将被存储在 Sui 上，以便进行查询和管理。
+
+**Sui 合约示例**（改进）：
+```move
+module TreeNFT {
+    use 0x2::NFT;
+    use 0x2::Time;
+    use 0x2::URI;
+
+    struct TreeNFT has store {
+        id: u64,
+        owner: address,
+        expiration: u64,
+        isMinted: bool,
+        uri: address,  // 存储 Walrus 存储的 URI
+    }
+
+    public fun mint_nft(account: &signer, tree_id: u64, uri: address): address {
+        let expiration_time = Time::now() + 86400;  // 24 hours from now
+        let nft = TreeNFT {
+            id: tree_id,
+            owner: signer::address_of(account),
+            expiration: expiration_time,
+            isMinted: false,
+            uri: uri,  // 存储Walrus URI
+        };
+        let nft_address = NFT::create(account, nft);
+        nft_address
+    }
+
+    public fun get_tree_data_uri(tree_id: u64): address {
+        let tree_nft = NFT::get_tree_nft(tree_id);
+        return tree_nft.uri;  // 返回 Walrus 存储的 URI
+    }
+}
+```
+
+#### **4.3 前端集成 Walrus 存储**
+
+在前端应用中，用户可以通过访问存储在 Walrus 上的数据 URI 来获取树木的详细信息，如碳汇数据、气象信息等。
+
+**示例代码**（访问 Walrus 存储的树木数据）：
+```javascript
+import React, { useState, useEffect } from 'react';
+import { getTreeDataURI } from './SuiWallet';  // 从 Sui 合约获取 URI
+
+function TreeDataDisplay({ treeId }) {
+  const [treeData, setTreeData] = useState(null);
+
+  useEffect(() => {
+    async function fetchTreeData() {
+      const uri = await getTreeDataURI(treeId);  // 获取 Walrus 存储 URI
+      const response = await fetch(uri);  // 从 Walrus 存储中获取数据
+      const data = await response.json();
+      setTreeData(data);
+    }
+    fetchTreeData();
+  }, [treeId]);
+
+  return (
+    <div>
+      <h3>Tree {treeId} Data</h3>
+      {treeData ? (
+        <div>
+          <p>Growth Status: {treeData.growthStatus}</p>
+          <p>Carbon Sequestration: {treeData.carbonSequestration}</p>
+          <p>Weather Data: {treeData.weather}</p>
+          {/* 添加更多树木的详细信息 */}
+        </div>
+      ) : (
+        <div>Loading data...</div>
+      )}
+    </div>
+  );
+}
+
+export default TreeDataDisplay;
+```
+
+### **4.4 完整方案优点**
+
+- **链上存储**：仅存储树木的核心元数据（如树木编号、地理位置、所有者等）。
+- **链下存储**：Walrus 存储大量的树木数据（如碳汇数据、气象数据、树木生长状态等），并通过 URI 引用。
+- **去中心化与可靠性**：通过 Walrus 去中心化存储，消除 IDC 存储的单点故障问题，提高数据的安全性和可靠性。
+- **扩展性**：Walrus 的存储机制非常适合大规模数据的存储，适应未来 2 万亿颗树的存储需求。
+- **成本效益**：去中心化存储通常在长期使用中能节省大量成本，尤其是在数据量巨大的情况下。
 
 ---
 
