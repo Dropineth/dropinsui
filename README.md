@@ -750,3 +750,521 @@ async function transferOwnership(treeId, newOwner) {
 
 ---
 
+
+# 树木碳汇系统技术文档
+
+## 目录
+1. [系统架构概述](#系统架构概述)
+2. [前端技术栈](#前端技术栈)
+3. [后端技术栈](#后端技术栈)
+4. [数据库设计](#数据库设计)
+5. [API接口文档](#API接口文档)
+6. [区块链集成](#区块链集成)
+7. [部署方案](#部署方案)
+
+## 系统架构概述
+
+### 整体架构
+```
+前端 (React) <-> API Gateway <-> 后端服务 <-> 数据存储层
+                                   ↕
+                              区块链服务
+                              (Sui Chain)
+```
+
+### 核心组件
+- 前端: React + TailwindCSS
+- 后端: Node.js/Express
+- 数据库: PostgreSQL + Redis
+- 区块链: Sui Chain
+- 存储: WALRUS分布式存储
+
+## 前端技术栈
+
+### 核心框架与库
+- React 18
+- TailwindCSS
+- React Router v6
+- React Query
+- Recharts (数据可视化)
+- Ethers.js (区块链交互)
+
+### 目录结构
+```
+src/
+├── assets/          # 静态资源
+├── components/      # 通用组件
+│   ├── common/     # 基础UI组件
+│   ├── layout/     # 布局组件
+│   └── widgets/    # 业务组件
+├── contexts/       # React Context
+├── hooks/          # 自定义Hooks
+├── pages/          # 页面组件
+├── services/       # API服务
+├── store/          # 状态管理
+├── styles/         # 样式文件
+└── utils/          # 工具函数
+```
+
+### 核心组件设计
+
+#### TreeMap组件
+```javascript
+// src/components/widgets/TreeMap.tsx
+import React, { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+
+interface TreeMapProps {
+  trees: Tree[];
+  onTreeSelect: (tree: Tree) => void;
+}
+
+export const TreeMap: React.FC<TreeMapProps> = ({ trees, onTreeSelect }) => {
+  return (
+    <MapContainer center={[39.9042, 116.4074]} zoom={13}>
+      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      {trees.map(tree => (
+        <Marker 
+          key={tree.id}
+          position={[tree.lat, tree.lon]}
+          onClick={() => onTreeSelect(tree)}
+        >
+          <Popup>
+            <div>
+              <h3>Tree #{tree.id}</h3>
+              <p>Species: {tree.species}</p>
+              <p>Carbon: {tree.carbonSeq} kg</p>
+            </div>
+          </Popup>
+        </Marker>
+      ))}
+    </MapContainer>
+  );
+};
+```
+
+#### TreeDetails组件
+```javascript
+// src/components/widgets/TreeDetails.tsx
+import React from 'react';
+import { LineChart } from 'recharts';
+
+interface TreeDetailsProps {
+  tree: Tree;
+  carbonData: CarbonData[];
+}
+
+export const TreeDetails: React.FC<TreeDetailsProps> = ({ tree, carbonData }) => {
+  return (
+    <div className="p-4 bg-white rounded-lg shadow">
+      <h2 className="text-xl font-bold mb-4">Tree Details</h2>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <p>Species: {tree.species}</p>
+          <p>Location: {tree.lat}, {tree.lon}</p>
+          <p>Carbon Sequestered: {tree.carbonSeq} kg</p>
+        </div>
+        <div>
+          <LineChart width={400} height={300} data={carbonData}>
+            {/* Chart configuration */}
+          </LineChart>
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+### 状态管理
+使用React Context和自定义Hooks管理全局状态：
+
+```typescript
+// src/contexts/TreeContext.tsx
+import React, { createContext, useContext, useReducer } from 'react';
+
+interface TreeState {
+  trees: Tree[];
+  selectedTree: Tree | null;
+  loading: boolean;
+  error: Error | null;
+}
+
+const TreeContext = createContext<TreeState | undefined>(undefined);
+
+export const TreeProvider: React.FC = ({ children }) => {
+  const [state, dispatch] = useReducer(treeReducer, initialState);
+  
+  return (
+    <TreeContext.Provider value={{ state, dispatch }}>
+      {children}
+    </TreeContext.Provider>
+  );
+};
+
+// 自定义Hook
+export const useTree = () => {
+  const context = useContext(TreeContext);
+  if (!context) {
+    throw new Error('useTree must be used within TreeProvider');
+  }
+  return context;
+};
+```
+
+## 后端技术栈
+
+### 核心框架与库
+- Node.js
+- Express.js
+- TypeScript
+- PostgreSQL
+- Redis
+- Sui SDK
+
+### 目录结构
+```
+src/
+├── config/         # 配置文件
+├── controllers/    # 控制器
+├── middleware/     # 中间件
+├── models/        # 数据模型
+├── routes/        # 路由
+├── services/      # 业务逻辑
+├── utils/         # 工具函数
+└── app.ts         # 应用入口
+```
+
+### API服务实现
+
+#### Tree服务
+```typescript
+// src/services/TreeService.ts
+import { Pool } from 'pg';
+import { Redis } from 'ioredis';
+
+export class TreeService {
+  constructor(
+    private readonly db: Pool,
+    private readonly redis: Redis
+  ) {}
+
+  async getTreeById(id: string): Promise<Tree> {
+    // 先查Redis缓存
+    const cached = await this.redis.get(`tree:${id}`);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
+    // 查数据库
+    const result = await this.db.query(
+      'SELECT * FROM trees WHERE id = $1',
+      [id]
+    );
+    const tree = result.rows[0];
+
+    // 写入缓存
+    await this.redis.set(
+      `tree:${id}`,
+      JSON.stringify(tree),
+      'EX',
+      3600
+    );
+
+    return tree;
+  }
+
+  async updateTreeData(id: string, data: Partial<Tree>): Promise<void> {
+    await this.db.query(
+      'UPDATE trees SET data = $1 WHERE id = $2',
+      [data, id]
+    );
+    
+    // 清除缓存
+    await this.redis.del(`tree:${id}`);
+  }
+}
+```
+
+#### 区块链服务
+```typescript
+// src/services/BlockchainService.ts
+import { JsonRpcProvider } from '@mysten/sui.js';
+
+export class BlockchainService {
+  private provider: JsonRpcProvider;
+
+  constructor(rpcUrl: string) {
+    this.provider = new JsonRpcProvider(rpcUrl);
+  }
+
+  async mintTreeNFT(treeId: string, owner: string): Promise<string> {
+    // 调用智能合约
+    const tx = await this.provider.signAndExecuteTransaction({
+      kind: 'moveCall',
+      data: {
+        packageObjectId: 'xxx',
+        module: 'tree_nft',
+        function: 'mint',
+        arguments: [treeId, owner],
+      },
+    });
+
+    return tx.certificate.transactionDigest;
+  }
+}
+```
+
+## 数据库设计
+
+### PostgreSQL表结构
+
+```sql
+-- 树木基本信息表
+CREATE TABLE trees (
+    id SERIAL PRIMARY KEY,
+    species VARCHAR(100) NOT NULL,
+    lat DECIMAL(10, 8) NOT NULL,
+    lon DECIMAL(11, 8) NOT NULL,
+    planted_at TIMESTAMP NOT NULL,
+    owner_address VARCHAR(42),
+    nft_token_id VARCHAR(66),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 碳汇数据表
+CREATE TABLE carbon_data (
+    id SERIAL PRIMARY KEY,
+    tree_id INTEGER REFERENCES trees(id),
+    timestamp TIMESTAMP NOT NULL,
+    carbon_amount DECIMAL(10, 2) NOT NULL,
+    weather_conditions JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 树木维护记录表
+CREATE TABLE maintenance_records (
+    id SERIAL PRIMARY KEY,
+    tree_id INTEGER REFERENCES trees(id),
+    maintenance_type VARCHAR(50) NOT NULL,
+    description TEXT,
+    performed_at TIMESTAMP NOT NULL,
+    performed_by VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Redis缓存设计
+
+```
+# 键值设计
+tree:{id} -> {tree_json_data}              # 树木基本信息缓存
+carbon:{tree_id}:latest -> {carbon_data}   # 最新碳汇数据缓存
+maintenance:{tree_id}:latest -> {record}   # 最新维护记录缓存
+
+# 过期时间
+tree:{id} - 1小时
+carbon:{tree_id}:latest - 5分钟
+maintenance:{tree_id}:latest - 1天
+```
+
+## API接口文档
+
+### 树木管理接口
+
+#### 获取树木信息
+```
+GET /api/v1/trees/:id
+
+Response 200:
+{
+  "id": "123",
+  "species": "Pine",
+  "location": {
+    "lat": 39.9042,
+    "lon": 116.4074
+  },
+  "carbonData": {
+    "total": 150.5,
+    "lastUpdate": "2025-02-22T10:00:00Z"
+  },
+  "ownerAddress": "0x...",
+  "nftTokenId": "0x..."
+}
+```
+
+#### 更新树木数据
+```
+PUT /api/v1/trees/:id
+Content-Type: application/json
+
+Request:
+{
+  "carbonData": {
+    "amount": 2.5,
+    "timestamp": "2025-02-22T10:00:00Z"
+  }
+}
+
+Response 200:
+{
+  "success": true,
+  "updatedAt": "2025-02-22T10:00:00Z"
+}
+```
+
+### NFT管理接口
+
+#### 铸造树木NFT
+```
+POST /api/v1/nft/mint
+Content-Type: application/json
+
+Request:
+{
+  "treeId": "123",
+  "ownerAddress": "0x..."
+}
+
+Response 200:
+{
+  "success": true,
+  "tokenId": "0x...",
+  "transactionHash": "0x..."
+}
+```
+
+## 区块链集成
+
+### Sui智能合约集成
+
+```typescript
+// src/blockchain/SuiClient.ts
+import { JsonRpcProvider, RawSigner } from '@mysten/sui.js';
+
+export class SuiClient {
+  private provider: JsonRpcProvider;
+  private signer: RawSigner;
+
+  constructor(
+    rpcUrl: string,
+    privateKey: string
+  ) {
+    this.provider = new JsonRpcProvider(rpcUrl);
+    this.signer = new RawSigner(privateKey, this.provider);
+  }
+
+  async mintTreeNFT(
+    treeId: string,
+    ownerAddress: string
+  ): Promise<string> {
+    const tx = await this.signer.executeMoveCall({
+      packageObjectId: process.env.CONTRACT_ADDRESS,
+      module: 'tree_nft',
+      function: 'mint',
+      typeArguments: [],
+      arguments: [treeId, ownerAddress],
+      gasBudget: 10000,
+    });
+
+    return tx.certificate.transactionDigest;
+  }
+
+  async transferNFT(
+    tokenId: string,
+    fromAddress: string,
+    toAddress: string
+  ): Promise<string> {
+    const tx = await this.signer.executeMoveCall({
+      packageObjectId: process.env.CONTRACT_ADDRESS,
+      module: 'tree_nft',
+      function: 'transfer',
+      typeArguments: [],
+      arguments: [tokenId, fromAddress, toAddress],
+      gasBudget: 10000,
+    });
+
+    return tx.certificate.transactionDigest;
+  }
+}
+```
+
+## 部署方案
+
+### Docker配置
+
+```dockerfile
+# Frontend Dockerfile
+FROM node:18-alpine as builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+# Backend Dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
+### Docker Compose配置
+
+```yaml
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://user:pass@db:5432/treedb
+      - REDIS_URL=redis://redis:6379
+      - SUI_RPC_URL=https://sui-mainnet.example.com
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:14-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=treedb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:6-alpine
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
